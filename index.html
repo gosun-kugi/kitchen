@@ -135,31 +135,54 @@
       });
     }
 
-    // ==========================================
-    // BLE接続とデータ受信処理
+// ==========================================
+    // BLE接続とデータ受信処理（全検索版）
     // ==========================================
     async function connectBLE() {
+      if (!navigator.bluetooth) {
+        alert("❌ Web Bluetooth未対応の環境です。\n・iPhoneなら「Bluefy」アプリで開いているか\n・URLが「https://」で始まっているか\n確認してください。");
+        return;
+      }
+
       try {
-        connectBtn.textContent = '接続中...';
+        connectBtn.textContent = 'デバイス検索中...';
         
-        // 1. デバイスのスキャンと選択
+        // 【変更点】フィルターを解除し、近くのすべてのBLEデバイスを検索一覧に表示
         const device = await navigator.bluetooth.requestDevice({
-          filters: [{ services: [SERVICE_UUID] }],
-          // 特定のUUIDが不明な場合は以下のように全てのデバイスを許可し、optionalServicesを指定します
-          // acceptAllDevices: true,
-          // optionalServices: [SERVICE_UUID]
+          acceptAllDevices: true,
+          // 接続後に使う可能性のあるサービスUUIDを広めに登録しておきます
+          optionalServices: [
+            '181d', // 一般的な体重計・スケール
+            'ffe0', 'fff0', 'ffe1', 'fff1' // 中華系・格安スケールで非常によく使われるカスタムUUID
+          ]
         });
 
-        // 2. GATTサーバーへ接続
+        connectBtn.textContent = '接続中...';
         const server = await device.gatt.connect();
         
-        // 3. サービスの取得
-        const service = await server.getPrimaryService(SERVICE_UUID);
-        
-        // 4. キャラクタリスティック（データの窓口）の取得
-        const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+        // 選択されたデバイスの「データ通信の窓口（サービス）」を探す
+        let service;
+        let characteristicUUID;
 
-        // 5. Notify（通知）の開始
+        // 候補1: 標準的なスケールUUID (181d) を試す
+        try {
+          service = await server.getPrimaryService('181d');
+          characteristicUUID = '2a9d';
+        } catch (e) {
+          // 候補2: 格安スケールによくあるカスタムUUID (ffe0) を試す
+          try {
+            service = await server.getPrimaryService('ffe0');
+            characteristicUUID = 'ffe1';
+          } catch (e2) {
+            // 見つからなかった場合、エラーを投げて下のcatchに飛ばす
+            throw new Error("スケールの通信サービスが見つかりませんでした。機器固有のUUIDを調べる必要があります。");
+          }
+        }
+        
+        // キャラクタリスティックの取得
+        const characteristic = await service.getCharacteristic(characteristicUUID);
+
+        // Notify（通知）の開始
         await characteristic.startNotifications();
         characteristic.addEventListener('characteristicvaluechanged', handleNotifications);
 
@@ -175,11 +198,41 @@
 
       } catch (error) {
         console.error('BLE接続エラー:', error);
-        alert('接続に失敗しました。デバイスの電源が入っているか確認してください。\n詳細: ' + error.message);
+        alert('接続エラー:\n' + error.message);
         connectBtn.textContent = 'スケールに接続';
       }
     }
 
+    // ==========================================
+    // データを受信したときの処理（汎用対応版）
+    // ==========================================
+    function handleNotifications(event) {
+      const value = event.target.value;
+      let rawWeight = 0;
+
+      try {
+        // 機種によってデータの長さが異なるため、安全にパースします
+        if (value.byteLength >= 2) {
+          // 2バイト（16bit）で重さが送られてくるパターン（リトルエンディアン）
+          rawWeight = value.getUint16(0, true); 
+        } else if (value.byteLength === 1) {
+          // 1バイト（8bit）で送られてくるパターン
+          rawWeight = value.getUint8(0);
+        }
+        
+        // ※もし数値が10倍（例: 50.0gが「500」）で表示される場合は、
+        // 以下のコメントアウトを解除してください。
+        // rawWeight = rawWeight / 10;
+
+      } catch (e) {
+        console.error("データパースエラー", e);
+        return;
+      }
+
+      // 画面更新
+      weightDisplay.innerHTML = `${rawWeight.toFixed(1)}<span class="unit">g</span>`;
+      updateChart(rawWeight);
+    }
     // ==========================================
     // データを受信したときの処理
     // ==========================================
