@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>BLE キッチンスケールモニター</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* 全体のレイアウト設定 */
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      background-color: #fafafa;
+    }
+
+    /* 画面上半分（数値表示エリア） */
+    #top-half {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border-bottom: 2px solid #ddd;
+      background-color: #ffffff;
+    }
+
+    #connect-btn {
+      padding: 12px 24px;
+      font-size: 1.2rem;
+      font-weight: bold;
+      color: white;
+      background-color: #007bff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    #connect-btn:active {
+      background-color: #0056b3;
+      transform: translateY(2px);
+    }
+
+    #weight-display {
+      font-size: 18vw; /* スマホ画面に合わせた巨大な文字 */
+      font-weight: bold;
+      color: #333;
+      line-height: 1;
+    }
+
+    .unit {
+      font-size: 6vw;
+      color: #666;
+    }
+
+    /* 画面下半分（グラフエリア） */
+    #bottom-half {
+      flex: 1;
+      position: relative;
+      padding: 10px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="top-half">
+    <button id="connect-btn">スケールに接続</button>
+    <div id="weight-display">0.0<span class="unit">g</span></div>
+  </div>
+
+  <div id="bottom-half">
+    <canvas id="weightChart"></canvas>
+  </div>
+
+  <script>
+    // ==========================================
+    // BLEの設定（お使いの機器に合わせて変更してください）
+    // ==========================================
+    // 一般的な体重計/スケールのサービスUUID（例: 0x181D）を設定していますが、
+    // 実際のデバイスの仕様書やアプリでUUIDを確認して書き換えてください。
+    const SERVICE_UUID = '181d'; // 例: Weight Scale Service
+    const CHARACTERISTIC_UUID = '2a9d'; // 例: Weight Measurement
+
+    // グラフの最大表示データ数（横軸の長さ）
+    const MAX_DATA_POINTS = 50; 
+
+    // UI要素の取得
+    const connectBtn = document.getElementById('connect-btn');
+    const weightDisplay = document.getElementById('weight-display');
+    let chart;
+
+    // ==========================================
+    // グラフの初期化 (Chart.js)
+    // ==========================================
+    function initChart() {
+      const ctx = document.getElementById('weightChart').getContext('2d');
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: [], // 時間（X軸）
+          datasets: [{
+            label: '重さ (g)',
+            data: [], // 重さ（Y軸）
+            borderColor: '#ff6384',
+            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+            borderWidth: 2,
+            tension: 0.2, // 線のなめらかさ
+            pointRadius: 0, // 点を非表示にして描画を軽くする
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false, // リアルタイム描画のためアニメーションをオフ
+          scales: {
+            x: {
+              display: true,
+              title: { display: true, text: '時間' }
+            },
+            y: {
+              display: true,
+              title: { display: true, text: '重さ (g)' },
+              beginAtZero: true
+            }
+          }
+        }
+      });
+    }
+
+    // ==========================================
+    // BLE接続とデータ受信処理
+    // ==========================================
+    async function connectBLE() {
+      try {
+        connectBtn.textContent = '接続中...';
+        
+        // 1. デバイスのスキャンと選択
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ services: [SERVICE_UUID] }],
+          // 特定のUUIDが不明な場合は以下のように全てのデバイスを許可し、optionalServicesを指定します
+          // acceptAllDevices: true,
+          // optionalServices: [SERVICE_UUID]
+        });
+
+        // 2. GATTサーバーへ接続
+        const server = await device.gatt.connect();
+        
+        // 3. サービスの取得
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        
+        // 4. キャラクタリスティック（データの窓口）の取得
+        const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+        // 5. Notify（通知）の開始
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', handleNotifications);
+
+        connectBtn.textContent = '接続完了';
+        connectBtn.style.backgroundColor = '#28a745';
+        connectBtn.disabled = true;
+
+        device.addEventListener('gattserverdisconnected', () => {
+          connectBtn.textContent = '再接続する';
+          connectBtn.style.backgroundColor = '#dc3545';
+          connectBtn.disabled = false;
+        });
+
+      } catch (error) {
+        console.error('BLE接続エラー:', error);
+        alert('接続に失敗しました。デバイスの電源が入っているか確認してください。\n詳細: ' + error.message);
+        connectBtn.textContent = 'スケールに接続';
+      }
+    }
+
+    // ==========================================
+    // データを受信したときの処理
+    // ==========================================
+    function handleNotifications(event) {
+      const value = event.target.value;
+      
+      // 【重要】データのパース（変換）処理
+      // ここはキッチンスケールのメーカーや機種によってデータ形式が異なります。
+      // 以下はリトルエンディアンの16ビット整数（例：200 = 20.0g または 200g）と仮定したパースの例です。
+      // 実際の仕様書に合わせて `value.getUint8()` や `value.getFloat32()` などに変更してください。
+      
+      let rawWeight = 0;
+      try {
+        // 例: 最初の2バイトを符号なし16ビット整数として読み取る
+        rawWeight = value.getUint16(0, true); 
+        
+        // 必要に応じて単位を調整（例：1/10にするなど）
+        // rawWeight = rawWeight / 10; 
+      } catch (e) {
+        console.error("データパースエラー", e);
+        return;
+      }
+
+      // 画面上部の数値を更新
+      weightDisplay.innerHTML = `${rawWeight.toFixed(1)}<span class="unit">g</span>`;
+
+      // グラフを更新
+      updateChart(rawWeight);
+    }
+
+    // ==========================================
+    // グラフのデータ更新処理
+    // ==========================================
+    function updateChart(weight) {
+      const now = new Date();
+      const timeLabel = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+
+      // データを追加
+      chart.data.labels.push(timeLabel);
+      chart.data.datasets[0].data.push(weight);
+
+      // 古いデータを削除してグラフが右に流れるようにする
+      if (chart.data.labels.length > MAX_DATA_POINTS) {
+        chart.data.labels.shift();
+        chart.data.datasets[0].data.shift();
+      }
+
+      // グラフを描画
+      chart.update();
+    }
+
+    // 起動時の初期化
+    initChart();
+    connectBtn.addEventListener('click', connectBLE);
+
+  </script>
+</body>
+</html>
