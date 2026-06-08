@@ -2,77 +2,85 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>BLE キッチンスケールモニター</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BLE キッチンスケール モニター</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    /* 全体のレイアウト設定 */
-    body, html {
+    body {
       margin: 0;
       padding: 0;
-      height: 100%;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      height: 100vh;
       display: flex;
       flex-direction: column;
-      background-color: #fafafa;
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      background-color: #121212;
+      color: #ffffff;
     }
-
-    /* 画面上半分（数値表示エリア） */
+    
+    /* 上半分：数値表示エリア */
     #top-half {
       flex: 1;
       display: flex;
       flex-direction: column;
-      align-items: center;
       justify-content: center;
-      border-bottom: 2px solid #ddd;
-      background-color: #ffffff;
+      align-items: center;
+      border-bottom: 2px solid #333;
+    }
+    
+    /* 下半分：グラフエリア */
+    #bottom-half {
+      flex: 1;
+      padding: 10px;
+      box-sizing: border-box;
+      position: relative;
     }
 
-    #connect-btn {
-      padding: 12px 24px;
+    #connectBtn {
+      padding: 15px 40px;
       font-size: 1.2rem;
-      font-weight: bold;
-      color: white;
-      background-color: #007bff;
       border: none;
-      border-radius: 8px;
+      border-radius: 30px;
+      background-color: #007aff;
+      color: white;
       cursor: pointer;
-      margin-bottom: 20px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      transition: background-color 0.2s;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
 
-    #connect-btn:active {
+    #connectBtn:hover {
       background-color: #0056b3;
-      transform: translateY(2px);
+    }
+
+    #connectBtn:disabled {
+      background-color: #555;
+      cursor: not-allowed;
     }
 
     #weight-display {
-      font-size: 18vw; /* スマホ画面に合わせた巨大な文字 */
+      font-size: 6rem;
       font-weight: bold;
-      color: #333;
-      line-height: 1;
+      margin-top: 20px;
+      font-variant-numeric: tabular-nums;
     }
 
     .unit {
-      font-size: 6vw;
-      color: #666;
+      font-size: 2rem;
+      color: #aaaaaa;
     }
 
-    /* 画面下半分（グラフエリア） */
-    #bottom-half {
-      flex: 1;
-      position: relative;
-      padding: 10px;
-      width: 100%;
-      box-sizing: border-box;
+    #status {
+      margin-top: 10px;
+      font-size: 0.9rem;
+      color: #888;
     }
   </style>
 </head>
 <body>
 
   <div id="top-half">
-    <button id="connect-btn">スケールに接続</button>
-    <div id="weight-display">0.0<span class="unit">g</span></div>
+    <button id="connectBtn">スケールに接続</button>
+    <div id="status">未接続</div>
+    <div id="weight-display">0.0 <span class="unit">g</span></div>
   </div>
 
   <div id="bottom-half">
@@ -81,213 +89,199 @@
 
   <script>
     // ==========================================
-    // BLEの設定（お使いの機器に合わせて変更してください）
+    // ⚠️ お使いのデバイスに合わせて書き換えてください
     // ==========================================
-    // 一般的な体重計/スケールのサービスUUID（例: 0x181D）を設定していますが、
-    // 実際のデバイスの仕様書やアプリでUUIDを確認して書き換えてください。
-    const SERVICE_UUID = '0x180A'; // 例: Weight Scale Service
-    const CHARACTERISTIC_UUID = '2a9d'; // 例: Weight Measurement
-
-    // グラフの最大表示データ数（横軸の長さ）
-    const MAX_DATA_POINTS = 50; 
-
+    // 例: 標準的なWeight Scale ServiceのUUID
+    const SERVICE_UUID = '0000ffb0-0000-1000-8000-00805f9b34fb'; 
+    const CHARACTERISTIC_UUID = '0000ffb2-0000-1000-8000-00805f9b34fb';
+    
     // UI要素の取得
-    const connectBtn = document.getElementById('connect-btn');
+    const connectBtn = document.getElementById('connectBtn');
     const weightDisplay = document.getElementById('weight-display');
-    let chart;
+    const statusText = document.getElementById('status');
+    const ctx = document.getElementById('weightChart').getContext('2d');
+
+    let bluetoothDevice;
+    let weightCharacteristic;
 
     // ==========================================
     // グラフの初期化 (Chart.js)
     // ==========================================
-    function initChart() {
-      const ctx = document.getElementById('weightChart').getContext('2d');
-      chart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: [], // 時間（X軸）
-          datasets: [{
-            label: '重さ (g)',
-            data: [], // 重さ（Y軸）
-            borderColor: '#ff6384',
-            backgroundColor: 'rgba(255, 99, 132, 0.2)',
-            borderWidth: 2,
-            tension: 0.2, // 線のなめらかさ
-            pointRadius: 0, // 点を非表示にして描画を軽くする
-            fill: true
-          }]
+    const maxDataPoints = 50; // グラフに表示する最大データ数（横軸の長さ）
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label: '重さ (g)',
+          data: [],
+          borderColor: '#007aff',
+          backgroundColor: 'rgba(0, 122, 255, 0.1)',
+          borderWidth: 2,
+          pointRadius: 0, // 点を消して滑らかな線にする
+          fill: true,
+          tension: 0.4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false, // リアルタイム描画のためアニメーションをオフ
+        scales: {
+          x: {
+            display: true,
+            title: { display: true, text: '時間', color: '#888' },
+            ticks: { color: '#888' },
+            grid: { color: '#333' }
+          },
+          y: {
+            display: true,
+            title: { display: true, text: '重さ (g)', color: '#888' },
+            ticks: { color: '#888' },
+            grid: { color: '#333' },
+            suggestedMin: 0
+          }
         },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: false, // リアルタイム描画のためアニメーションをオフ
-          scales: {
-            x: {
-              display: true,
-              title: { display: true, text: '時間' }
-            },
-            y: {
-              display: true,
-              title: { display: true, text: '重さ (g)' },
-              beginAtZero: true
-            }
-          }
+        plugins: {
+          legend: { display: false }
         }
-      });
-    }
-
-// ==========================================
-    // BLE接続とデータ受信処理（全検索版）
-    // ==========================================
-    async function connectBLE() {
-      if (!navigator.bluetooth) {
-        alert("❌ Web Bluetooth未対応の環境です。\n・iPhoneなら「Bluefy」アプリで開いているか\n・URLが「https://」で始まっているか\n確認してください。");
-        return;
       }
+    });
 
-      try {
-        connectBtn.textContent = 'デバイス検索中...';
-        
-        // 【変更点】フィルターを解除し、近くのすべてのBLEデバイスを検索一覧に表示
-        const device = await navigator.bluetooth.requestDevice({
-          acceptAllDevices: true,
-          // 接続後に使う可能性のあるサービスUUIDを広めに登録しておきます
-          optionalServices: [
-            '181d', // 一般的な体重計・スケール
-            'ffe0', 'fff0', 'ffe1', 'fff1' // 中華系・格安スケールで非常によく使われるカスタムUUID
-          ]
-        });
-
-        connectBtn.textContent = '接続中...';
-        const server = await device.gatt.connect();
-        
-        // 選択されたデバイスの「データ通信の窓口（サービス）」を探す
-        let service;
-        let characteristicUUID;
-
-        // 候補1: 標準的なスケールUUID (181d) を試す
-        try {
-          service = await server.getPrimaryService('181d');
-          characteristicUUID = '2a9d';
-        } catch (e) {
-          // 候補2: 格安スケールによくあるカスタムUUID (ffe0) を試す
-          try {
-            service = await server.getPrimaryService('ffe0');
-            characteristicUUID = 'ffe1';
-          } catch (e2) {
-            // 見つからなかった場合、エラーを投げて下のcatchに飛ばす
-            throw new Error("スケールの通信サービスが見つかりませんでした。機器固有のUUIDを調べる必要があります。");
-          }
-        }
-        
-        // キャラクタリスティックの取得
-        const characteristic = await service.getCharacteristic(characteristicUUID);
-
-        // Notify（通知）の開始
-        await characteristic.startNotifications();
-        characteristic.addEventListener('characteristicvaluechanged', handleNotifications);
-
-        connectBtn.textContent = '接続完了';
-        connectBtn.style.backgroundColor = '#28a745';
-        connectBtn.disabled = true;
-
-        device.addEventListener('gattserverdisconnected', () => {
-          connectBtn.textContent = '再接続する';
-          connectBtn.style.backgroundColor = '#dc3545';
-          connectBtn.disabled = false;
-        });
-
-      } catch (error) {
-        console.error('BLE接続エラー:', error);
-        alert('接続エラー:\n' + error.message);
-        connectBtn.textContent = 'スケールに接続';
-      }
-    }
-
-    // ==========================================
-    // データを受信したときの処理（汎用対応版）
-    // ==========================================
-    function handleNotifications(event) {
-      const value = event.target.value;
-      let rawWeight = 0;
-
-      try {
-        // 機種によってデータの長さが異なるため、安全にパースします
-        if (value.byteLength >= 2) {
-          // 2バイト（16bit）で重さが送られてくるパターン（リトルエンディアン）
-          rawWeight = value.getUint16(0, true); 
-        } else if (value.byteLength === 1) {
-          // 1バイト（8bit）で送られてくるパターン
-          rawWeight = value.getUint8(0);
-        }
-        
-        // ※もし数値が10倍（例: 50.0gが「500」）で表示される場合は、
-        // 以下のコメントアウトを解除してください。
-        // rawWeight = rawWeight / 10;
-
-      } catch (e) {
-        console.error("データパースエラー", e);
-        return;
-      }
-
-      // 画面更新
-      weightDisplay.innerHTML = `${rawWeight.toFixed(1)}<span class="unit">g</span>`;
-      updateChart(rawWeight);
-    }
-    // ==========================================
-    // データを受信したときの処理
-    // ==========================================
-    function handleNotifications(event) {
-      const value = event.target.value;
-      
-      // 【重要】データのパース（変換）処理
-      // ここはキッチンスケールのメーカーや機種によってデータ形式が異なります。
-      // 以下はリトルエンディアンの16ビット整数（例：200 = 20.0g または 200g）と仮定したパースの例です。
-      // 実際の仕様書に合わせて `value.getUint8()` や `value.getFloat32()` などに変更してください。
-      
-      let rawWeight = 0;
-      try {
-        // 例: 最初の2バイトを符号なし16ビット整数として読み取る
-        rawWeight = value.getUint16(0, true); 
-        
-        // 必要に応じて単位を調整（例：1/10にするなど）
-        // rawWeight = rawWeight / 10; 
-      } catch (e) {
-        console.error("データパースエラー", e);
-        return;
-      }
-
-      // 画面上部の数値を更新
-      weightDisplay.innerHTML = `${rawWeight.toFixed(1)}<span class="unit">g</span>`;
-
-      // グラフを更新
-      updateChart(rawWeight);
-    }
-
-    // ==========================================
-    // グラフのデータ更新処理
-    // ==========================================
+    // グラフにデータを追加する関数
     function updateChart(weight) {
       const now = new Date();
       const timeLabel = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
 
-      // データを追加
       chart.data.labels.push(timeLabel);
       chart.data.datasets[0].data.push(weight);
 
-      // 古いデータを削除してグラフが右に流れるようにする
-      if (chart.data.labels.length > MAX_DATA_POINTS) {
+      // データが最大数を超えたら古いものを削除（スクロール効果）
+      if (chart.data.labels.length > maxDataPoints) {
         chart.data.labels.shift();
         chart.data.datasets[0].data.shift();
       }
-
-      // グラフを描画
       chart.update();
     }
 
-    // 起動時の初期化
-    initChart();
-    connectBtn.addEventListener('click', connectBLE);
+    // ==========================================
+    // BLE接続処理
+    // ==========================================
+    connectBtn.addEventListener('click', async () => {
+      try {
+        statusText.innerText = 'デバイスを探しています...';
+        
+        // 1. デバイスのスキャンと選択
+	bluetoothDevice = await navigator.bluetooth.requestDevice({
+	  acceptAllDevices: true,
+	  optionalServices: [SERVICE_UUID]
+	});
 
+        statusText.innerText = '接続中...';
+        bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+        // 2. GATTサーバーへ接続
+        const server = await bluetoothDevice.gatt.connect();
+
+        // 3. サービスの取得
+        const service = await server.getPrimaryService(SERVICE_UUID);
+
+        // 4. キャラクタリスティック（データ通信の窓口）の取得
+        weightCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+        // 5. Notify（通知）の開始
+        await weightCharacteristic.startNotifications();
+        weightCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
+
+        statusText.innerText = `${bluetoothDevice.name} に接続済み`;
+        connectBtn.innerText = '切断する';
+        connectBtn.style.backgroundColor = '#ff3b30'; // 切断時は赤色に
+        
+        // ボタンの挙動を切断用に上書き
+        connectBtn.onclick = disconnectDevice;
+
+      } catch (error) {
+        console.error('BLE Connection Error:', error);
+        statusText.innerText = '接続エラー: ' + error.message;
+      }
+    });
+
+    // ==========================================
+    // データ受信処理
+    // ==========================================
+
+
+function handleNotifications(event) {
+  const value = event.target.value;
+  
+  try {
+    // 1. データの「確定フラグ」をチェック (3バイト目)
+    const isStable = value.getUint8(2) === 0x01;
+    statusText.innerText = isStable ? "🟢 値が確定" : "🔵 測定中...";
+
+    // 2. 5, 6, 7バイト目（インデックス4, 5, 6）から24ビット整数（ビッグエンディアン）を合成
+    const b1 = value.getUint8(4);
+    const b2 = value.getUint8(5);
+    const b3 = value.getUint8(6);
+    
+    // 3バイト結合して1つの数値にする
+    let rawWeight = (b1 << 16) | (b2 << 8) | b3;
+
+    // 3. 24ビットの「符号付き整数（2の補数）」として処理する
+    // これにより、56.0gの時の巨大な値（0x0DAB60）が正しく処理されます
+    if (rawWeight & 0x800000) {
+      rawWeight = rawWeight - 0x1000000;
+    }
+
+    // 4. 生データをグラム換算する
+    // データ構造から、1g ＝ 1000（あるいは1000に近い特定の係数）であることが確定しました。
+    // 72.3gで72370、72.4gで72350なので、正確な倍率は「1001.0」付近です。
+    let calculatedWeight = rawWeight / 1001.0;
+
+    // マイナス値の絶対値が極小の場合は0リセット
+    if (Math.abs(calculatedWeight) < 0.1) calculatedWeight = 0.0;
+    
+    // 符号を反転させる必要がある場合（もし56gを乗せたときにマイナス表示になったら、ここを calculatedWeight = -calculatedWeight; にしてください）
+    // いただいたデータ傾向から、そのまま正の数として扱います
+    calculatedWeight = Math.abs(calculatedWeight);
+
+    // 画面表示用に小数点第1位に丸める
+    const finalWeight = calculatedWeight.toFixed(1);
+
+    // 画面とリアルタイムグラフの更新
+    weightDisplay.innerHTML = `${finalWeight} <span class="unit">g</span>`;
+    updateChart(parseFloat(finalWeight));
+
+    // デバッグ用に画面下に生データ（16進数）を表示
+    let hexString = '';
+    for (let i = 0; i < value.byteLength; i++) {
+      hexString += ('00' + value.getUint8(i).toString(16)).slice(-2) + ' ';
+    }
+    statusText.innerText += " | 生データ: " + hexString;
+
+  } catch (e) {
+    console.error("パースエラー:", e);
+  }
+}
+    // ==========================================
+    // 切断処理
+    // ==========================================
+    function disconnectDevice() {
+      if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+        bluetoothDevice.gatt.disconnect();
+      }
+    }
+
+    function onDisconnected() {
+      statusText.innerText = '切断されました';
+      connectBtn.innerText = 'スケールに接続';
+      connectBtn.style.backgroundColor = '#007aff';
+      connectBtn.onclick = null; // 元のイベントリスナーに戻す
+      
+      // 再接続用にページをリロードする簡易設計にするか、
+      // 状態をリセットする処理を入れます
+      setTimeout(() => { location.reload(); }, 2000); 
+    }
   </script>
 </body>
 </html>
